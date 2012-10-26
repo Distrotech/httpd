@@ -32,6 +32,7 @@
 #include "util_ldap_cache.h"
 
 #include <apr_strings.h>
+#include <sasl/sasl.h>
 
 #if APR_HAVE_UNISTD_H
 #include <unistd.h>
@@ -72,6 +73,15 @@ module AP_MODULE_DECLARE_DATA ldap_module;
     if (st->util_ldap_cache_lock)                               \
         apr_global_mutex_unlock(st->util_ldap_cache_lock);      \
 } while (0)
+
+#ifdef SASL_H
+typedef struct {
+	const char *passwd;
+	const char *realm;
+	const char *authzid;
+	request_rec *request;
+} uldap_sasl_ctx;
+#endif
 
 static void util_ldap_strdup (char **str, const char *newstr)
 {
@@ -329,6 +339,57 @@ static int uldap_connection_init(request_rec *r,
 
     return(rc);
 }
+
+#ifdef SASL_H
+static int uldap_sasl_interact(LDAP *ldap, unsigned flags, void *defaults, void *in)
+{
+	sasl_interact_t *interact = in;
+	uldap_sasl_ctx *ctx = defaults;
+	const char *p;
+
+	for (;interact->id != SASL_CB_LIST_END;interact++) {
+		p = NULL;
+		switch(interact->id) {
+			case SASL_CB_GETREALM:
+				p = ctx->realm;
+				break;
+			case SASL_CB_AUTHNAME:
+				p = ctx->request->user;
+				break;
+			case SASL_CB_USER:
+				p = ctx->authzid;
+				break;
+			case SASL_CB_PASS:
+				p = ctx->passwd;
+				break;
+		}
+		if (p) {
+			interact->result = p;
+			interact->len = strlen(interact->result);
+		}
+	}
+	return LDAP_SUCCESS;
+}
+
+static int uldap_sasl_bind(request_rec *r, util_ldap_connection_t *ldc, const char *bindpw, const char *binddn)
+{
+	int rc;
+	uldap_sasl_ctx ctx;
+
+	ctx.passwd=bindpw;
+	ctx.realm=NULL;
+	ctx.authzid=NULL;
+	ctx.request=r;
+
+	rc = ldap_sasl_interactive_bind_s(ldc->ldap, binddn, "PLAIN", NULL, NULL, LDAP_SASL_QUIET, uldap_sasl_interact, &ctx);
+
+	if (rc != LDAP_SUCCESS) {
+		ap_log_error(APLOG_MARK, APLOG_ERR, 0, r->server, "LDAP: SASL Failed %s", ldap_err2string(rc));
+		rc = ldap_simple_bind_s(ldc->ldap, binddn, bindpw);
+	}
+	return rc;
+}
+#endif
 
 /*
  * Connect to the LDAP server and binds. Does not connect if already
@@ -1023,9 +1084,7 @@ start_over:
      * fails, it means that the password is wrong (the dn obviously
      * exists, since we just retrieved it)
      */
-    result = ldap_simple_bind_s(ldc->ldap,
-                                (char *)*binddn,
-                                (char *)bindpw);
+    result = uldap_sasl_bind(r, ldc, bindpw, *binddn);
     if (AP_LDAP_IS_SERVER_DOWN(result)) {
         ldc->reason = "ldap_simple_bind_s() to check user credentials "
                       "failed with server down";
