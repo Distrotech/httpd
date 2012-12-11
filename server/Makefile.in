@@ -45,7 +45,7 @@ EXPORT_DIRS_APR = $(APR_INCLUDEDIR) $(APU_INCLUDEDIR)
 delete-exports:
 	@if test -f exports.c; then \
 	    if test -f export_files; then \
-	        files=`cat export_files`; \
+	        files=`cat export_files |sed -e "s/\/\//\//g" |sort |uniq`; \
 	        headers="`find $$files -newer exports.c`"; \
 	        if test -n "$$headers"; then \
 	           echo Found newer headers. Will rebuild exports.c.; \
@@ -70,7 +70,7 @@ export_files:
 	rm -f $$tmp
 
 exports.c: export_files
-	$(AWK) -f $(top_srcdir)/build/make_exports.awk `cat $?` > $@
+	$(AWK) -f $(top_srcdir)/build/make_exports.awk `cat $? |sed -e "s/\/\//\//g" |sort |uniq` > $@
 
 export_vars.h: export_files
 	$(AWK) -f $(top_srcdir)/build/make_var_export.awk `cat $?` > $@
